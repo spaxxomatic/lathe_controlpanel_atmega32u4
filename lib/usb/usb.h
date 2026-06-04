@@ -11,29 +11,39 @@ extern "C" {
 #endif
 
 
-extern volatile uint8_t keyboard_pressed_keys[6];
-extern volatile uint8_t keyboard_modifier;
-
 uint8_t usb_config_status;
-uint8_t keyboard_protocol; // This doesn't matter at all, we just need it for supporting a request
-
-uint8_t keyboard_leds;  // You don't need to use this if you don't want
-                               // to or don't have the hardware
 
 int usb_init();
 bool get_usb_config_status();
-int usb_send();
-int send_keypress(uint8_t, uint8_t);
+int send_report(uint8_t buttons, int8_t delta);
 
+#ifndef GET_STATUS
 #define GET_STATUS 0x00
+#endif
+#ifndef CLEAR_FEATURE
 #define CLEAR_FEATURE 0x01
+#endif
+#ifndef SET_FEATURE
 #define SET_FEATURE 0x03
+#endif
+#ifndef SET_ADDRESS
 #define SET_ADDRESS 0x05
+#endif
+#ifndef GET_DESCRIPTOR
 #define GET_DESCRIPTOR 0x06
+#endif
+#ifndef GET_CONFIGURATION
 #define GET_CONFIGURATION 0x08
+#endif
+#ifndef SET_CONFIGURATION
 #define SET_CONFIGURATION 0x09
+#endif
+#ifndef GET_INTERFACE
 #define GET_INTERFACE 0x0A
+#endif
+#ifndef SET_INTERFACE
 #define SET_INTERFACE 0x0B
+#endif
 
 #define idVendor 0x03eb  // Atmel Corp.
 #define idProduct 0x2ff4  // ATMega32u4 DFU Bootloader (This isn't a real product so I don't

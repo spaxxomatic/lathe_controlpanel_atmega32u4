@@ -11,17 +11,7 @@ USB Controller initialization, device setup, and HID interrupt routines
 #include "avr/io.h"
 
 
-volatile uint8_t keyboard_pressed_keys[6] = {0, 0, 0, 0, 0, 0};
-volatile uint8_t keyboard_modifier = 0;
-
-static uint16_t keyboard_idle_value =
-    125;  // HID Idle setting, how often the device resends unchanging reports,
-          // we are using a scaling of 4 because of the register size
-static uint8_t current_idle =
-    0;  // Counter that updates based on how many SOFE interrupts have occurred
-static uint8_t this_interrupt =
-    0;  // This is not the best way to do it, but it
-        // is much more readable than the alternative
+static uint8_t this_interrupt = 0;
 
 /*  Device Descriptor - The top level descriptor when enumerating a USB device`
         Specification: USB 2.0 (April 27, 2000) Chapter 9 Table 9-5
@@ -64,80 +54,40 @@ static const uint8_t device_descriptor[] PROGMEM = {
         // devices only have one
 };
 
-/*  HID Descriptor - The descriptor that gives information about the HID device
-        Specification: Device Class Definition for Human Interface Devices (HID)
-   6/27/2001 Appendix B - Keyboard Protocol Specification This descriptor was
-   written referring to the example descriptor in table E.6
-*/
-static const uint8_t keyboard_HID_descriptor[] PROGMEM = {
-    0x05,
-    0x01,  // Usage Page - Generic Desktop - HID Spec Appendix E E.6 - The
-           // values for the HID tags are not clearly listed anywhere really, so
-           // this table is very useful
-    0x09,
-    0x06,  // Usage - Keyboard
-    0xA1,
-    0x01,  // Collection - Application
-    0x05,
-    0x07,  // Usage Page - Key Codes
-    0x19,
-    0xE0,  // Usage Minimum - The bit that controls the 8 modifier characters
-           // (ctrl, command, etc)
-    0x29,
-    0xE7,  // Usage Maximum - The end of the modifier bit (0xE7 - 0xE0 = 1 byte)
-    0x15,
-    0x00,  // Logical Minimum - These keys are either not pressed or pressed, 0
-           // or 1
-    0x25,
-    0x01,  // Logical Maximum - Pressed state == 1
-    0x75,
-    0x01,  // Report Size - The size of the IN report to the host
-    0x95,
-    0x08,  // Report Count - The number of keys in the report
-    0x81,
-    0x02,  // Input - These are variable inputs
-    0x95,
-    0x01,  // Report Count - 1
-    0x75,
-    0x08,  // Report Size - 8
-    0x81,
-    0x01,  // This byte is reserved according to the spec
-    0x95,
-    0x05,  // Report Count - This is for the keyboard LEDs
-    0x75,
-    0x01,  // Report Size
-    0x05,
-    0x08,  // Usage Page for LEDs
-    0x19,
-    0x01,  // Usage minimum for LEDs
-    0x29,
-    0x05,  // Usage maximum for LEDs
-    0x91,
-    0x02,  // Output - This is for a host output to the keyboard for the status
-           // of the LEDs
-    0x95,
-    0x01,  // Padding for the report so that it is at least 1 byte
-    0x75,
-    0x03,  // Padding
-    0x91,
-    0x01,  // Output - Constant for padding
-    0x95,
-    0x06,  // Report Count - For the keys
-    0x75,
-    0x08,  // Report Size - For the keys
-    0x15,
-    0x00,  // Logical Minimum
-    0x25,
-    0x65,  // Logical Maximum
-    0x05,
-    0x07,  // Usage Page - Key Codes
-    0x19,
-    0x00,  // Usage Minimum - 0
-    0x29,
-    0x65,  // Usage Maximum - 101
-    0x81,
-    0x00,  // Input - Data, Array
-    0xC0   // End collection
+// HID report descriptor: Joystick with 4 buttons + 1 relative Dial axis
+// Report layout (2 bytes):
+//   Byte 0: bits 0-3 = buttons 1-4, bits 4-7 = padding
+//   Byte 1: dial delta (int8, relative)
+static const uint8_t dial_HID_descriptor[] PROGMEM = {
+    0x05, 0x01,  // Usage Page: Generic Desktop
+    0x09, 0x04,  // Usage: Joystick
+    0xA1, 0x01,  // Collection: Application
+
+    // 4 buttons
+    0x05, 0x09,  //   Usage Page: Button
+    0x19, 0x01,  //   Usage Minimum: Button 1
+    0x29, 0x04,  //   Usage Maximum: Button 4
+    0x15, 0x00,  //   Logical Minimum: 0
+    0x25, 0x01,  //   Logical Maximum: 1
+    0x75, 0x01,  //   Report Size: 1 bit
+    0x95, 0x04,  //   Report Count: 4
+    0x81, 0x02,  //   Input: Data, Variable, Absolute
+
+    // 4 padding bits to complete the byte
+    0x75, 0x01,  //   Report Size: 1 bit
+    0x95, 0x04,  //   Report Count: 4
+    0x81, 0x01,  //   Input: Constant
+
+    // Dial axis
+    0x05, 0x01,  //   Usage Page: Generic Desktop
+    0x09, 0x37,  //   Usage: Dial
+    0x15, 0x80,  //   Logical Minimum: -128
+    0x25, 0x7F,  //   Logical Maximum: 127
+    0x75, 0x08,  //   Report Size: 8 bits
+    0x95, 0x01,  //   Report Count: 1
+    0x81, 0x06,  //   Input: Data, Variable, Relative
+
+    0xC0         // End Collection
 };
 
 /*  Configuration Descriptor - The descriptor that gives information about the
@@ -160,31 +110,27 @@ static const uint8_t configuration_descriptor[] PROGMEM = {
     1,      // bConfigurationValue
     0,      // iConfiguration - We have no string descriptors
     0xC0,   // bmAttributes - Set the device power source
-    50,     // bMaxPower - 50 x 2mA units = 100mA max power consumption
+    150,    // bMaxPower - 150 x 2mA units = 300mA max power consumption
     // Refer to Table 9-10 for the descriptor structure - Configuration
     // Descriptors have interface descriptors, interface descriptors have
     // endpoint descriptors along with a special HID descriptor
     9,     // bLength
-    4,     // bDescriptorType - 4 is interface
-    0,     // bInterfaceNumber - This is the 0th and only interface
-    0,     // bAlternateSetting - There are no alternate settings
-    1,     // bNumEndpoints - This interface only uses one endpoint
-    0x03,  // bInterfaceClass - 0x03 (specified by USB-IF) is the interface
-           // class code for HID
-    0x01,  // bInterfaceSubClass - 1 (specified by USB-IF) is the constant for
-           // the boot subclass - this keyboard can communicate with the BIOS,
-           // but is limited to 6KRO, as are most keyboards
-    0x01,  // bInterfaceProtocol - 0x01 (specified by USB-IF) is the protcol
-           // code for keyboards
-    0,     // iInterface - There are no string descriptors for this
-    // HID Descriptor - Refer to E.4 HID Spec
+    4,     // bDescriptorType - interface
+    0,     // bInterfaceNumber
+    0,     // bAlternateSetting
+    1,     // bNumEndpoints
+    0x03,  // bInterfaceClass - HID
+    0x00,  // bInterfaceSubClass - 0 = no boot subclass
+    0x00,  // bInterfaceProtocol - 0 = none
+    0,     // iInterface
+    // HID Descriptor
     9,           // bLength
-    0x21,        // bDescriptorType - 0x21 is HID
-    0x11, 0x01,  // bcdHID - HID Class Specification 1.11
+    0x21,        // bDescriptorType - HID
+    0x11, 0x01,  // bcdHID 1.11
     0,           // bCountryCode
-    1,           // bNumDescriptors - Number of HID descriptors
-    0x22,        // bDescriptorType - Type of descriptor
-    sizeof(keyboard_HID_descriptor), 0,  // wDescriptorLength
+    1,           // bNumDescriptors
+    0x22,        // bDescriptorType - Report
+    sizeof(dial_HID_descriptor), 0,  // wDescriptorLength
     // Endpoint Descriptor - Example can be found in the HID spec table E.5
     7,     // bLength
     0x05,  // bDescriptorType
@@ -220,34 +166,16 @@ int usb_init() {
   return 0;
 }
 
-int send_keypress(uint8_t key, uint8_t mod) {
-  keyboard_pressed_keys[0] = key;
-  keyboard_modifier = mod;
-  if (usb_send() < 0)
-    return -1;
-  keyboard_pressed_keys[0] = 0;
-  keyboard_modifier = 0;
-  if (usb_send() < 0)
-    return -1;
-  return 0;
-}
-
-int usb_send() {
+int send_report(uint8_t buttons, int8_t delta) {
   if (!usb_config_status)
-    return -1;  // Why are you even trying
+    return -1;
   cli();
   UENUM = KEYBOARD_ENDPOINT_NUM;
-
   while (!(UEINTX & (1 << RWAL)))
-    ;  // Wait for banks to be ready
-  UEDATX = keyboard_modifier;
-  UEDATX = 0;
-  for (int i = 0; i < 6; i++) {
-    UEDATX = keyboard_pressed_keys[i];
-  }
-
+    ;  // wait for endpoint bank to be ready
+  UEDATX = buttons & 0x0F;   // low 4 bits = buttons 1-4
+  UEDATX = (uint8_t)delta;
   UEINTX = 0b00111010;
-  current_idle = 0;
   sei();
   return 0;
 }
@@ -280,29 +208,7 @@ ISR(USB_GEN_vect) {
         (1 << RXSTPE);  // Re-enable the RXSPTE (Receive Setup Packet) Interrupt
     return;
   }
-  if ((udint_temp & (1 << SOFI)) &&
-      usb_config_status) {  // Check for Start Of Frame Interrupt and correct
-                            // usb configuration, send keypress if a keypress
-                            // event has not been sent through usb_send
-    this_interrupt++;
-    if (keyboard_idle_value &&
-        (this_interrupt & 3) == 0) {  // Scaling by four, trying to save memory
-      UENUM = KEYBOARD_ENDPOINT_NUM;
-      if (UEINTX & (1 << RWAL)) {  // Check if banks are writable
-        current_idle++;
-        if (current_idle ==
-            keyboard_idle_value) {  // Have we reached the idle threshold?
-          current_idle = 0;
-          UEDATX = keyboard_modifier;
-          UEDATX = 0;
-          for (int i = 0; i < 6; i++) {
-            UEDATX = keyboard_pressed_keys[i];
-          }
-          UEINTX = 0b00111010;
-        }
-      }
-    }
-  }
+  (void)this_interrupt;  // SOF interrupt not used for dial device
 }
 
 ISR(USB_COM_vect) {
@@ -343,8 +249,8 @@ ISR(USB_COM_vect) {
         descriptor = configuration_descriptor + HID_OFFSET;
         descriptor_length = pgm_read_byte(descriptor);
       } else if (wValue == 0x2200) {
-        descriptor = keyboard_HID_descriptor;
-        descriptor_length = sizeof(keyboard_HID_descriptor);
+        descriptor = dial_HID_descriptor;
+        descriptor_length = sizeof(dial_HID_descriptor);
       } else {
         PORTC = 0xFF;
         UECONX |=
@@ -434,74 +340,27 @@ ISR(USB_COM_vect) {
       return;
     }
 
-    if (wIndex == 0) {  // Is this a request to the keyboard interface for HID
-                        // class-specific requests?
-      if (bmRequestType ==
-          0xA1) {  // GET Requests - Refer to the table in HID Specification 7.2
-                   // - This byte specifies the data direction of the packet.
-                   // Unnecessary since bRequest is unique, but it makes the
-                   // code clearer
-        if (bRequest == GET_REPORT) {  // Get the current HID report
+    if (wIndex == 0) {
+      if (bmRequestType == 0xA1) {  // HID GET requests
+        if (bRequest == GET_REPORT) {
           while (!(UEINTX & (1 << TXINI)))
-            ;  // Wait for the banks to be ready for transmission
-          UEDATX = keyboard_modifier;
-
-          for (int i = 0; i < 6; i++) {
-            UEDATX = keyboard_pressed_keys
-                [i];  // According to the spec, this method of getting the
-                      // report is not used for device polling, although we
-                      // still have to implement the response
-          }
+            ;
+          UEDATX = 0;  // buttons
+          UEDATX = 0;  // dial delta
           UEINTX &= ~(1 << TXINI);
           return;
         }
         if (bRequest == GET_IDLE) {
           while (!(UEINTX & (1 << TXINI)))
             ;
-
-          UEDATX = keyboard_idle_value;
-
-          UEINTX &= ~(1 << TXINI);
-          return;
-        }
-        if (bRequest == GET_PROTOCOL) {
-          while (!(UEINTX & (1 << TXINI)))
-            ;
-
-          UEDATX = keyboard_protocol;
-
+          UEDATX = 0;
           UEINTX &= ~(1 << TXINI);
           return;
         }
       }
-
-      if (bmRequestType ==
-          0x21) {  // SET Requests - Host-to-device data direction
-        if (bRequest == SET_REPORT) {
-          while (!(UEINTX & (1 << RXOUTI)))
-            ;  // This is the opposite of the TXINI one, we are waiting until
-               // the banks are ready for reading instead of for writing
-          keyboard_leds = UEDATX;
-
-          UEINTX &= ~(1 << TXINI);  // Send ACK and clear TX bit
-          UEINTX &= ~(1 << RXOUTI);
-          return;
-        }
+      if (bmRequestType == 0x21) {  // HID SET requests
         if (bRequest == SET_IDLE) {
-          keyboard_idle_value = wValue;  //
-          current_idle = 0;
-
-          UEINTX &= ~(1 << TXINI);  // Send ACK and clear TX bit
-          return;
-        }
-        if (bRequest ==
-            SET_PROTOCOL) {  // This request is only mandatory for boot devices,
-                             // and this is a boot device
-          keyboard_protocol =
-              wValue >> 8;  // Nobody cares what happens to this, arbitrary cast
-                            // from 16 bit to 8 bit doesn't matter
-
-          UEINTX &= ~(1 << TXINI);  // Send ACK and clear TX bit
+          UEINTX &= ~(1 << TXINI);  // ACK, ignore value — no idle for relative device
           return;
         }
       }
