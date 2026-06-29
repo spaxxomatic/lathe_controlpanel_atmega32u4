@@ -1,21 +1,13 @@
-The lathe control panel should connect to the main control via USB and send operator commands. 
+The lathe pendant connects to the main control via USB . 
 
 Operator inputs:
 
 * Jog speed
 
-* Jog wheel (incremental encoder with A/B inputs)
+* Jog wheel 
 
-* axis select (Z, Y)
+* Axis select (Z, Y)
 
 * DRO commands: 
-zero X, zero Y, enter coords
+zero X, zero Z, G0, arrow_up, arrow_dn, enter
 
-* Function commands / buttons - TBD - will map to macros in the dro.py on processor side. I think about the following:
- - face
- - single-point threading with spindle synchronization
- - turn 
- - taper
- - start program 
- - pause 
- - 
